@@ -283,7 +283,7 @@
         if (obj && typeof obj === "object") {
             var n = obj.length,
                     str = serialize.call(obj)
-            if (/Array|NodeList|Arguments|CSSRuleList/.test(str)) {
+            if (/(Array|List|Collection|Map|Arguments)\]$/.test(str)) {
                 return true
             } else if (str === "[object Object]" && (+n === n && !(n % 1) && n >= 0)) {
                 return true //由于ecma262v5能修改对象属性的enumerable，因此不能用propertyIsEnumerable来判定了
@@ -291,6 +291,7 @@
         }
         return false
     }
+    avalon.isArrayLike = isArrayLike
     //视浏览器情况采用最快的异步回调
     avalon.nextTick = window.setImmediate ? setImmediate.bind(window) : function(callback) {
         setTimeout(callback, 0)
@@ -687,15 +688,16 @@
                     var val = this.attr(name)
                     return parseData(val)
                 case 0:
-                    var attrs = this[0].attributes,
-                            ret = {}
-                    for (var i = 0, attr; attr = attrs[i++]; ) {
-                        name = attr.name
-                        if (!name.indexOf("data-")) {
-                            name = camelize(name.slice(5))
-                            ret[name] = parseData(attr.value)
+                    var ret = {}
+                    ap.forEach.call(this[0].attributes, function(attr) {
+                        if (attr) {
+                            name = attr.name
+                            if (!name.indexOf("data-")) {
+                                name = camelize(name.slice(5))
+                                ret[name] = parseData(attr.value)
+                            }
                         }
-                    }
+                    })
                     return ret
             }
         },
@@ -869,7 +871,7 @@
     }
 
     cssHooks["@:get"] = function(node, name) {
-        var ret, styles = window.getComputedStyle(node, null)
+        var ret, styles = getComputedStyle(node, null)
         if (styles) {
             ret = styles.getPropertyValue(name)
             if (ret === "") {
@@ -900,7 +902,7 @@
     function showHidden(node, array) {
         //http://www.cnblogs.com/rubylouvre/archive/2012/10/27/2742529.html
         if (node.offsetWidth <= 0) { //opera.offsetWidth可能小于0
-            var styles = window.getComputedStyle(node, null)
+            var styles = getComputedStyle(node, null)
             if (rdisplayswap.test(styles["display"])) {
                 var obj = {
                     node: node
@@ -923,10 +925,29 @@
                 clientProp = "client" + name,
                 scrollProp = "scroll" + name,
                 offsetProp = "offset" + name
-        cssHooks[method + "::get"] = function(node) {
+        cssHooks[method + ":get"] = function(node, which, override) {
+            var boxSizing = "content-box"
+            if (typeof override === "string") {
+                boxSizing = override
+            }
+            which = name === "Width" ? ["Left", "Right"] : ["Top", "Bottom"]
+            switch (boxSizing) {
+                case "content-box":
+                    return node["client" + name] - avalon.css(node, "padding" + which[0], true) -
+                            avalon.css(node, "padding" + which[1], true)
+                case "padding-box":
+                    return node["client" + name]
+                case "border-box":
+                    return node["offset" + name]
+                case "margin-box":
+                    return node["offset" + name] + avalon.css(node, "margin" + which[0], true) +
+                            avalon.css(node, "margin" + which[1], true)
+            }
+        }
+        cssHooks[method + "&get"] = function(node) {
             var hidden = [];
             showHidden(node, hidden);
-            var val = avalon.css(node, method, true)
+            var val = cssHooks[method + ":get"](node)
             for (var i = 0, obj; obj = hidden[i++]; ) {
                 node = obj.node
                 for (var n in obj) {
@@ -951,12 +972,17 @@
                     //IE 怪异模式 : html.scrollHeight 最大等于可视窗口多一点？
                     return Math.max(node.body[scrollProp], doc[scrollProp], node.body[offsetProp], doc[offsetProp], doc[clientProp])
                 }
-                return cssHooks[method + "::get"](node)
+                return cssHooks[method + "&get"](node)
             } else {
                 return this.css(method, value)
             }
         }
-
+        avalon.fn["inner" + name] = function() {
+            return cssHooks[method + ":get"](this[0], void 0, "padding-box")
+        }
+        avalon.fn["outer" + name] = function(includeMargin) {
+            return cssHooks[method + ":get"](this[0], void 0, includeMargin === true ? "border-box" : "margin-box")
+        }
     })
     avalon.fn.offset = function() { //取得距离页面左右角的坐标
         var node = this[0],
@@ -1076,9 +1102,11 @@
             for (var i = 0, el; el = els[i++]; ) {
                 if (!el.type || scriptTypes[el.type]) { //如果script节点的MIME能让其执行脚本
                     neo = script.cloneNode(false) //FF不能省略参数
-                    for (var j = 0, attr; attr = el.attributes[j++]; ) {
-                        neo[attr.name] = attr.value //复制其属性
-                    }
+                    ap.forEach.call(el.attributes, function(attr) {
+                        if (attr) {
+                            neo[attr.name] = attr.value //复制其属性
+                        }
+                    })
                     neo.text = el.text //必须指定,因为无法在attributes中遍历出来
                     el.parentNode.replaceChild(neo, el) //替换节点
                 }
@@ -1654,7 +1682,7 @@
         if (!cacheDisplay[nodeName]) {
             var node = DOC.createElement(nodeName)
             root.appendChild(node)
-            val = window.getComputedStyle(node, null).display
+            val = getComputedStyle(node, null).display
             root.removeChild(node)
             cacheDisplay[nodeName] = val
         }
@@ -1662,8 +1690,7 @@
     }
     avalon.parseDisplay = parseDisplay
     var supportDisplay = (function(td) {
-        return window.getComputedStyle ?
-                window.getComputedStyle(td, null).display == "table-cell" : true
+        return  getComputedStyle(td, null).display == "table-cell" 
     })(DOC.createElement("td"))
     var rdash = /\(([^)]*)\)/
     head.insertAdjacentHTML("afterBegin", '<style id="avalonStyle">.avalonHide{ display: none!important }</style>')
@@ -2400,8 +2427,8 @@
     }
     var TimerID, ribbon = [], launch = noop
 
-    function onTree() {
-        if (this.oldValue !== this.value) {
+    function onTree() {//disabled状态下改动不触发inout事件
+        if (!this.disabled && this.oldValue !== this.value) {
             avalon.fire(this, "input")
         }
     }
@@ -2479,8 +2506,8 @@
     duplexBinding.TEXTAREA = duplexBinding.INPUT
     //========================= event binding ====================
     var eventName = {
-        AnimationEvent: 'animationend',
-        WebKitAnimationEvent: 'webkitAnimationEnd'
+        AnimationEvent: "animationend",
+        WebKitAnimationEvent: "webkitAnimationEnd"
     }
     for (var name in eventName) {
         if (/object|function/.test(typeof window[name])) {

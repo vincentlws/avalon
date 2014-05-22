@@ -324,7 +324,6 @@
     }
 
     //只让节点集合，纯数组，arguments与拥有非负整数的length属性的纯JS对象通过
-
     function isArrayLike(obj) {
         if (obj && typeof obj === "object" && !avalon.isWindow(obj)) {
             var n = obj.length
@@ -385,6 +384,9 @@
         var watchProperties = arguments[2] || {} //强制要监听的属性
         var skipArray = scope.$skipArray //要忽略监控的属性
         for (var i = 0, name; name = skipProperties[i++]; ) {
+            if (typeof name !== "string") {
+                log("warning:$skipArray[" + name + "] must be a string")
+            }
             delete scope[name]
             normalProperties[name] = true
         }
@@ -638,6 +640,24 @@
         window.execScript([
             "Function parseVB(code)",
             "\tExecuteGlobal(code)",
+            "End Function",
+            "Dim VBClassBodies",
+            "Set VBClassBodies=CreateObject(\"Scripting.Dictionary\")",
+            "Function findOrDefineVBClass(name,body)",
+            "\tDim found",
+            "\tfound=\"\"",
+            "\tFor Each key in VBClassBodies",
+            "\t\tIf body=VBClassBodies.Item(key) Then",
+            "\t\t\tfound=key",
+            "\t\t\tExit For",
+            "\t\tEnd If",
+            "\tnext",
+            "\tIf found=\"\" Then",
+            "\t\tparseVB(\"Class \" + name + body)",
+            "\t\tVBClassBodies.Add name, body",
+            "\t\tfound=name",
+            "\tEnd If",
+            "\tfindOrDefineVBClass=found",
             "End Function"
         ].join("\n"), "VBScript")
 
@@ -652,9 +672,9 @@
         defineProperties = function(name, accessingProperties, normalProperties) {
             var className = "VBClass" + setTimeout("1"),
                     buffer = []
+
             buffer.push(
-                    "Class " + className,
-                    "\tPrivate [__data__], [__proxy__]",
+                    "\r\n\tPrivate [__data__], [__proxy__]",
                     "\tPublic Default Function [__const__](d, p)",
                     "\t\tSet [__data__] = d: set [__proxy__] = p",
                     "\t\tSet [__const__] = Me", //链式调用
@@ -685,15 +705,20 @@
                             "\tEnd Property")
                 }
             }
-            buffer.push("End Class") //类定义完毕
-            buffer.push(
+            buffer.push("End Class")
+            var code = buffer.join("\r\n"),
+                    realClassName = window['findOrDefineVBClass'](className, code) //如果该VB类已定义，返回类名。否则用className创建一个新类。
+            if (realClassName == className) {
+                window.parseVB([
                     "Function " + className + "Factory(a, b)", //创建实例并传入两个关键的参数
                     "\tDim o",
                     "\tSet o = (New " + className + ")(a, b)",
                     "\tSet " + className + "Factory = o",
-                    "End Function")
-            window.parseVB(buffer.join("\r\n")) //先创建一个VB类工厂
-            return window[className + "Factory"](accessingProperties, VBMediator) //得到其产品
+                    "End Function"
+                ].join("\r\n"))
+            }
+            var ret = window[realClassName + "Factory"](accessingProperties, VBMediator) //得到其产品
+            return ret //得到其产品
         }
     }
     /*********************************************************************
@@ -984,15 +1009,16 @@
                     var val = this.attr(name)
                     return parseData(val)
                 case 0:
-                    var attrs = this[0].attributes,
-                            ret = {}
-                    for (var i = 0, attr; attr = attrs[i++]; ) {
-                        name = attr.name
-                        if (!name.indexOf("data-")) {
-                            name = camelize(name.slice(5))
-                            ret[name] = parseData(attr.value)
+                    var ret = {}
+                    ap.forEach.call(this[0].attributes, function(attr) {
+                        if (attr) {
+                            name = attr.name
+                            if (!name.indexOf("data-")) {
+                                name = camelize(name.slice(5))
+                                ret[name] = parseData(attr.value)
+                            }
                         }
-                    }
+                    })
                     return ret
             }
         },
@@ -1154,7 +1180,7 @@
     }
     if (window.getComputedStyle) {
         cssHooks["@:get"] = function(node, name) {
-            var ret, styles = window.getComputedStyle(node, null)
+            var ret, styles = getComputedStyle(node, null)
             if (styles) {
                 ret = name === "filter" ? styles.getPropertyValue(name) : styles[name]
                 if (ret === "") {
@@ -1217,16 +1243,6 @@
                     op = alpha ? alpha.opacity : 100
             return (op / 100) + "" //确保返回的是字符串
         }
-        //旧式IE无法通过currentStyle取得没有定义在样式表中的width, height值
-        "width,height".replace(rword, function(name) {
-            cssHooks[name + ":get"] = function(node) {
-                if (name === "width") {
-                    return node.clientWidth - avalon.css(node, "paddingLeft", true) - avalon.css(node, "paddingRight", true)
-                } else {
-                    return node.clientHeight - avalon.css(node, "paddingTop", true) - avalon.css(node, "paddingBottom", true)
-                }
-            }
-        })
     }
 
     "top,left".replace(rword, function(name) {
@@ -1236,6 +1252,7 @@
                     avalon(node).position()[name] + "px"
         }
     })
+
     var cssShow = {
         position: "absolute",
         visibility: "hidden",
@@ -1268,10 +1285,29 @@
                 clientProp = "client" + name,
                 scrollProp = "scroll" + name,
                 offsetProp = "offset" + name
-        cssHooks[method + "::get"] = function(node) {
+        cssHooks[method + ":get"] = function(node, which, override) {
+            var boxSizing = "content-box"
+            if (typeof override === "string") {
+                boxSizing = override
+            }
+            which = name === "Width" ? ["Left", "Right"] : ["Top", "Bottom"]
+            switch (boxSizing) {
+                case "content-box":
+                    return node["client" + name] - avalon.css(node, "padding" + which[0], true) -
+                            avalon.css(node, "padding" + which[1], true)
+                case "padding-box":
+                    return node["client" + name]
+                case "border-box":
+                    return node["offset" + name]
+                case "margin-box":
+                    return node["offset" + name] + avalon.css(node, "margin" + which[0], true) +
+                            avalon.css(node, "margin" + which[1], true)
+            }
+        }
+        cssHooks[method + "&get"] = function(node) {
             var hidden = [];
             showHidden(node, hidden);
-            var val = avalon.css(node, method, true)
+            var val = cssHooks[method + ":get"](node)
             for (var i = 0, obj; obj = hidden[i++]; ) {
                 node = obj.node
                 for (var n in obj) {
@@ -1282,7 +1318,7 @@
             }
             return val;
         }
-        avalon.fn[method] = function(value) {
+        avalon.fn[method] = function(value) {//会忽视其display
             var node = this[0]
             if (arguments.length === 0) {
                 if (node.setTimeout) { //取得窗口尺寸,IE9后可以用node.innerWidth /innerHeight代替
@@ -1295,12 +1331,17 @@
                     //IE 怪异模式 : html.scrollHeight 最大等于可视窗口多一点？
                     return Math.max(node.body[scrollProp], doc[scrollProp], node.body[offsetProp], doc[offsetProp], doc[clientProp])
                 }
-                return cssHooks[method + "::get"](node)
+                return cssHooks[method + "&get"](node)
             } else {
                 return this.css(method, value)
             }
         }
-
+        avalon.fn["inner" + name] = function() {
+            return cssHooks[method + ":get"](this[0], void 0, "padding-box")
+        }
+        avalon.fn["outer" + name] = function(includeMargin) {
+            return cssHooks[method + ":get"](this[0], void 0, includeMargin === true ? "border-box" : "margin-box")
+        }
     })
     avalon.fn.offset = function() { //取得距离页面左右角的坐标
         var node = this[0],
@@ -1437,11 +1478,11 @@
             for (var i = 0, el; el = els[i++]; ) {
                 if (!el.type || scriptTypes[el.type]) { //如果script节点的MIME能让其执行脚本
                     neo = script.cloneNode(false) //FF不能省略参数
-                    for (var j = 0, attr; attr = el.attributes[j++]; ) {
-                        if (attr.specified) { //复制其属性
-                            neo[attr.name] = attr.value
+                    ap.forEach.call(el.attributes, function(attr) {
+                        if (attr && attr.specified) {
+                            neo[attr.name] = attr.value //复制其属性
                         }
-                    }
+                    })
                     neo.text = el.text //必须指定,因为无法在attributes中遍历出来
                     el.parentNode.replaceChild(neo, el) //替换节点
                 }
@@ -2097,8 +2138,8 @@
         if (!cacheDisplay[nodeName]) {
             var node = DOC.createElement(nodeName)
             root.appendChild(node)
-            if (window.getComputedStyle) {
-                val = window.getComputedStyle(node, null).display
+            if (W3C) {
+                val = getComputedStyle(node, null).display
             } else {
                 val = node.currentStyle.display
             }
@@ -2109,8 +2150,7 @@
     }
     avalon.parseDisplay = parseDisplay
     var supportDisplay = (function(td) {
-        return window.getComputedStyle ?
-                window.getComputedStyle(td, null).display === "table-cell" : true
+        return W3C ? getComputedStyle(td, null).display === "table-cell" : true
     })(DOC.createElement("td"))
     var domParser = DOC.createElement("div")
     domParser.setAttribute("className", "t")
@@ -2950,8 +2990,8 @@
     var TimerID, ribbon = [],
             launch = noop
 
-    function onTree() {
-        if (this.oldValue !== this.value) {
+    function onTree() {//disabled状态下改动不触发inout事件
+        if (!this.disabled && this.oldValue !== this.value) {
             var event = DOC.createEvent("Event")
             event.initEvent("input", true, true)
             this.dispatchEvent(event)
@@ -3039,8 +3079,8 @@
     //============================= event binding =======================
 
     var eventName = {
-        AnimationEvent: 'animationend',
-        WebKitAnimationEvent: 'webkitAnimationEnd'
+        AnimationEvent: "animationend",
+        WebKitAnimationEvent: "webkitAnimationEnd"
     }
     for (var name in eventName) {
         if (/object|function/.test(typeof window[name])) {
