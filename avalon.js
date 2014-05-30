@@ -5,7 +5,7 @@
  http://weibo.com/jslouvre/
  
  Released under the MIT license
- avalon 1.3 2014.5.25
+ avalon 1.3 2014.5.29
  ==================================================*/
 (function(DOC) {
     var Registry = {} //将函数曝光到此对象上，方便访问器收集依赖
@@ -578,7 +578,7 @@
             a.push.apply(a, bb)
             return a
         } else {
-            var iterators = a[subscribers]
+            var iterators = a[subscribers] || []
             if (withProxyPool[a.$id]) {
                 withProxyCount--
                 delete withProxyPool[a.$id]
@@ -662,10 +662,12 @@
 
         function VBMediator(accessingProperties, name, value) {
             var accessor = accessingProperties[name]
-            if (arguments.length === 3) {
-                accessor(value)
-            } else {
-                return accessor()
+            if (typeof accessor == "function") {
+                if (arguments.length === 3) {
+                    accessor(value)
+                } else {
+                    return accessor()
+                }
             }
         }
         defineProperties = function(name, accessingProperties, normalProperties) {
@@ -901,6 +903,7 @@
     kernel.plugins['interpolate'](["{{", "}}"])
     kernel.paths = {}
     kernel.shim = {}
+    kernel.maxRepeatSize = 100
     avalon.config = kernel
 
     /*********************************************************************
@@ -1567,7 +1570,7 @@
                     if (data.nodeType === 3) {
                         data.node.data = openTag + data.value + closeTag
                     }
-                    log("error:evaluator of [" + data.value + "] throws error!")
+                    log("warning:evaluator of [" + data.value + "] throws error!")
                 }
             }
         } else { //如果是计算属性的accessor
@@ -1601,9 +1604,6 @@
                 if (remove) { //如果它没有在DOM树
                     list.splice(i, 1)
                     log("debug: remove " + fn.name)
-                    for(var key in fn){
-                        fn[key] = null
-                    }
                 } else if (typeof fn === "function") {
                     fn.apply(0, args) //强制重新计算自身
                 } else if (fn.getter) {
@@ -1675,22 +1675,16 @@
             var nextNode = node.nextSibling
             if (node.nodeType === 1) {
                 scanTag(node, vmodels)
-            } else if (node.nodeType === 3) {
-                if (rexpr.test(node.data)) {
-                    scanText(node, node.data, vmodels)
-                }
-            } else if (node.nodeType === 8) { //在IE6-8里，如果插值表达式的界定符为<% %>，那么对应位置会变成
-                if (rexpr.test(node.innerHTML)) { //一个注释节点，见#346
-                    scanText(node, node.innerHTML, vmodels)
-                }
+            } else if (node.nodeType === 3 && rexpr.test(node.data)) {
+                scanText(node, vmodels)
             }
             node = nextNode
         }
     }
 
-    function scanText(textNode, text, vmodels) {
+    function scanText(textNode, vmodels) {
         var bindings = [],
-                tokens = scanExpr(text)
+                tokens = scanExpr(textNode.data)
         if (tokens.length) {
             for (var i = 0, token; token = tokens[i++]; ) {
                 var node = DOC.createTextNode(token.value) //将文本转换为文本节点，并替换原来的文本节点
@@ -2350,9 +2344,10 @@
                         var last = data.getter().length - 1
                         var spans = []
                         var lastFn = {}
+                        transation = transation.cloneNode(false)
                         for (var i = 0, n = arr.length; i < n; i++) {
                             var ii = i + pos
-                            var proxy = createEachProxy(ii, arr[i], data, last)
+                            var proxy = getEachProxy(ii, arr[i], data, last)
                             proxies.splice(ii, 0, proxy)
                             lastFn = shimController(data, transation, spans, proxy)
                         }
@@ -2366,7 +2361,10 @@
                         spans = null
                         break
                     case "del": //将pos后的el个元素删掉(pos, el都是数字)
-                        proxies.splice(pos, el)
+                        var removed = proxies.splice(pos, el)
+                        for (var i = 0, proxy; proxy = removed[i++]; ) {
+                            recycleEachProxy(proxy)
+                        }
                         expelFromSanctuary(removeView(locatedNode, group, el))
                         break
                     case "index": //将proxies中的第pos个起的所有元素重新索引（pos为数字，el用作循环变量）
@@ -2632,7 +2630,7 @@
                 }
             }
         },
-        "each": function(data, vmodels) {
+        "repeat": function(data, vmodels) {
             var type = data.type,
                     list
             parseExpr(data.value, vmodels, data)
@@ -2700,7 +2698,7 @@
             if (freturn) {
                 return
             }
-            data.callbackName = "data-" + (type || "each") + "-rendered"
+            data.callbackName = "data-" + type + "-rendered"
             data.handler = bindingExecutors.each
             data.$outer = {}
             var check0 = "$key",
@@ -2841,8 +2839,8 @@
     "hover,active".replace(rword, function(method) {
         bindingHandlers[method] = bindingHandlers["class"]
     })
-    "with,repeat".replace(rword, function(name) {
-        bindingHandlers[name] = bindingHandlers.each
+    "with,each".replace(rword, function(name) {
+        bindingHandlers[name] = bindingHandlers.repeat
     })
     //============================= boolean preperty binding =======================
     "disabled,enabled,readonly,selected".replace(rword, function(name) {
@@ -3465,7 +3463,26 @@
         proxy.$id = "$proxy$with" + Math.random()
         return proxy
     }
-
+    var eachPool = []
+    function getEachProxy(index, item, data, last) {
+        var param = data.param || "el", proxy
+        for (var i = 0, n = eachPool.length; i < n; i++) {
+            var proxy = eachPool[i]
+            if (proxy.hasOwnProperty(param)) {
+                proxy.$remove = function() {
+                    return data.getter().removeAt(proxy.$index)
+                }
+                proxy.$index = index
+                proxy.$outer = data.$outer
+                proxy[param] = item
+                proxy.$first = index === 0
+                proxy.$last = last
+                eachPool.splice(i, 1)
+                return proxy
+            }
+        }
+        return createEachProxy(index, item, data, last)
+    }
     function createEachProxy(index, item, data, last) {
         var param = data.param || "el"
         var source = {
@@ -3482,6 +3499,15 @@
         var proxy = modelFactory(source, 0, watchEachOne)
         proxy.$id = "$proxy$" + data.type + Math.random()
         return proxy
+    }
+    function recycleEachProxy(proxy) {
+        var obj = proxy.$accessors;
+        ["$index", "$last", "$first", proxy.$itemName].forEach(function(prop) {
+            obj[prop][subscribers].length = 0
+        })
+        if (eachPool.unshift(proxy) > kernel.maxRepeatSize) {
+            eachPool.pop()
+        }
     }
     /*********************************************************************
      *                  文本绑定里默认可用的过滤器                          *

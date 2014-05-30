@@ -1,5 +1,5 @@
 //==================================================
-// avalon.mobile 1.3 2014.5.25，mobile 注意： 只能用于IE10及高版本的标准浏览器
+// avalon.mobile 1.3 2014.5.29，mobile 注意： 只能用于IE10及高版本的标准浏览器
 //==================================================
 (function(DOC) {
     var Registry = {} //将函数曝光到此对象上，方便访问器收集依赖
@@ -531,7 +531,7 @@
             a.push.apply(a, bb)
             return a
         } else {
-            var iterators = a[subscribers]
+            var iterators = a[subscribers] || []
             if (withProxyPool[a.$id]) {
                 withProxyCount--
                 delete withProxyPool[a.$id]
@@ -610,6 +610,7 @@
     kernel.plugins['interpolate'](["{{", "}}"])
     kernel.paths = {}
     kernel.shim = {}
+    kernel.maxRepeatSize = 100
     avalon.config = kernel
 
     /*********************************************************************
@@ -1057,7 +1058,7 @@
     }
 
     avalon.clearHTML = function(node) {
-        expelFromSanctuary(node)
+        node.textContent = ""
         return node
     }
     var script = DOC.createElement("script")
@@ -1174,7 +1175,7 @@
                     if (data.nodeType === 3) {
                         data.node.data = openTag + data.value + closeTag
                     }
-                    log("error:evaluator of [" + data.value + "] throws error!")
+                    log("warning:evaluator of [" + data.value + "] throws error!")
                 }
             }
         } else { //如果是计算属性的accessor
@@ -1200,9 +1201,6 @@
                 if (el && !ifSanctuary.contains(el) && (!root.contains(el))) {
                     list.splice(i, 1)
                     log("debug: remove " + fn.name)
-                    for (var key in fn) {
-                        fn[key] = null
-                    }
                 } else if (typeof fn === "function") {
                     fn.apply(0, args) //强制重新计算自身
                 } else if (fn.getter) {
@@ -1843,9 +1841,10 @@
                         var last = data.getter().length - 1
                         var spans = [],
                                 lastFn = {}
+                        transation = transation.cloneNode(false)
                         for (var i = 0, n = arr.length; i < n; i++) {
                             var ii = i + pos
-                            var proxy = createEachProxy(ii, arr[i], data, last)
+                            var proxy = getEachProxy(ii, arr[i], data, last)
                             proxies.splice(ii, 0, proxy)
                             lastFn = shimController(data, transation, spans, proxy)
                         }
@@ -1859,7 +1858,10 @@
                         spans = null
                         break
                     case "del": //将pos后的el个元素删掉(pos, el都是数字)
-                        proxies.splice(pos, el)
+                        var removed = proxies.splice(pos, el)
+                        for (var i = 0, proxy; proxy = removed[i++]; ) {
+                            recycleEachProxy(proxy)
+                        }
                         expelFromSanctuary(removeView(locatedNode, group, el))
                         break
                     case "index": //将proxies中的第pos个起的所有元素重新索引（pos为数字，el用作循环变量）
@@ -2114,7 +2116,7 @@
                 }
             }
         },
-        "each": function(data, vmodels) {
+        "repeat": function(data, vmodels) {
             var type = data.type,
                     list
             parseExpr(data.value, vmodels, data)
@@ -2181,7 +2183,7 @@
             if (freturn) {
                 return
             }
-            data.callbackName = "data-" + (type || "each") + "-rendered"
+            data.callbackName = "data-" + type + "-rendered"
             data.handler = bindingExecutors.each
             data.$outer = {}
             var check0 = "$key",
@@ -2321,8 +2323,8 @@
     "hover,active".replace(rword, function(method) {
         bindingHandlers[method] = bindingHandlers["class"]
     })
-    "with,repeat".replace(rword, function(name) {
-        bindingHandlers[name] = bindingHandlers.each
+    "with,each".replace(rword, function(name) {
+        bindingHandlers[name] = bindingHandlers.repeat
     })
     //============================= boolean preperty binding =======================
     "disabled,enabled,readonly,selected".replace(rword, function(name) {
@@ -2853,6 +2855,8 @@
         }
         return view
     }
+
+
     // 为ms-each, ms-repeat创建一个代理对象，通过它们能使用一些额外的属性与功能（$index,$first,$last,$remove,$key,$val,$outer）
     var watchEachOne = oneObject("$index,$first,$last")
 
@@ -2868,7 +2872,26 @@
         proxy.$id = "$proxy$with" + Math.random()
         return proxy
     }
-
+    var eachPool = []
+    function getEachProxy(index, item, data, last) {
+        var param = data.param || "el", proxy
+        for (var i = 0, n = eachPool.length; i < n; i++) {
+            var proxy = eachPool[i]
+            if (proxy.hasOwnProperty(param)) {
+                proxy.$remove = function() {
+                    return data.getter().removeAt(proxy.$index)
+                }
+                proxy.$index = index
+                proxy.$outer = data.$outer
+                proxy[param] = item
+                proxy.$first = index === 0
+                proxy.$last = last
+                eachPool.splice(i, 1)
+                return proxy
+            }
+        }
+        return createEachProxy(index, item, data, last)
+    }
     function createEachProxy(index, item, data, last) {
         var param = data.param || "el"
         var source = {
@@ -2886,6 +2909,16 @@
         proxy.$id = "$proxy$" + data.type + Math.random()
         return proxy
     }
+    function recycleEachProxy(proxy) {
+        var obj = proxy.$accessors;
+        ["$index", "$last", "$first", proxy.$itemName].forEach(function(prop) {
+            obj[prop][subscribers].length = 0
+        })
+        if (eachPool.unshift(proxy) > kernel.maxRepeatSize) {
+            eachPool.pop()
+        }
+    }
+
     /*********************************************************************
      *                  文本绑定里默认可用的过滤器                        *
      **********************************************************************/
