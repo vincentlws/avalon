@@ -243,7 +243,7 @@
                 }
             }
             var callback = W3C ? fn : function(e) {
-                return fn.call(el, fixEvent(e))
+                fn.call(el, fixEvent(e));
             }
             if (W3C) {
                 el.addEventListener(type, callback, !!phase)
@@ -758,17 +758,60 @@
     function outerHTML() {
         return new XMLSerializer().serializeToString(this)
     }
-    if (window.SVGElement && !("innerHTML" in
-            document.createElementNS("'http://www.w3.org/2000/svg", "svg"))) {
-        Object.defineProperty(SVGElement.prototype, "outerHTML", {
-            get: outerHTML
-        })
-        Object.defineProperty(SVGElement.prototype, "innerHTML", {
-            get: function() {
-                var s = this.outerHTML
-                var ropen = new RegExp("<" + this.nodeName + '\\b(?:(["\'])[^"]*?(\\1)|[^>])*>', "i")
-                var rclose = new RegExp("<\/" + this.nodeName + ">$", "i")
-                return  s.replace(ropen, "").replace(rclose, "")
+    function enumerateNode(node, targetNode) {
+        if (node && node.childNodes) {
+            var nodes = node.childNodes
+            for (var i = 0, el; el = nodes[i++]; ) {
+                if (el.tagName) {
+                    var svg = document.createElementNS(svgns,
+                            el.tagName.toLowerCase())
+                    // copy attrs
+                    ap.forEach.call(el.attributes, function(attr) {
+                        svg.setAttribute(attr.name, attr.value)
+                    })
+                    // 递归处理子节点
+                    enumerateNode(el, svg)
+                    targetNode.appendChild(svg)
+                }
+            }
+        }
+    }
+    var svgns = "http://www.w3.org/2000/svg"
+    var svg = document.createElementNS(svgns, "svg")
+    svg.innerHTML = '<rect width="300" height="100"/>'
+    var supportSVGHTML = svg.firstChild && svg.firstChild.tagName === "svg"
+    if (window.SVGElement && !supportSVGHTML) {
+        Object.defineProperties(SVGElement.prototype, {
+            "outerHTML": {//IE9-11,firefox不支持SVG元素的innerHTML,outerHTML属性
+                get: outerHTML,
+                set: function(html) {
+                    var tagName = this.tagName.toLowerCase(),
+                            par = this.parentNode,
+                            frag = avalon.parseHTML(html)
+                    // 操作的svg，直接插入
+                    if (tagName === "svg") {
+                        par.insertBefore(frag, this)
+                        // svg节点的子节点类似
+                    } else {
+                        var newFrag = document.createDocumentFragment()
+                        enumerateNode(frag, newFrag)
+                        par.insertBefore(newFrag, this)
+                    }
+                    par.removeChild(this)
+                }
+            },
+            "innerHTML": {
+                get: function() {
+                    var s = this.outerHTML
+                    var ropen = new RegExp("<" + this.nodeName + '\\b(?:(["\'])[^"]*?(\\1)|[^>])*>', "i")
+                    var rclose = new RegExp("<\/" + this.nodeName + ">$", "i")
+                    return  s.replace(ropen, "").replace(rclose, "")
+                },
+                set: function(html) {
+                    avalon.clearHTML(this)
+                    var frag = avalon.parseHTML(html)
+                    enumerateNode(frag, this)
+                }
             }
         })
     }
@@ -1790,7 +1833,7 @@
         "duplex": 2000,
         "on": 3000
     }
-    var ons = oneObject("animationend,blur,change,input,click,dblclick,focus,keydown,keypress,keyup,mousedown,mouseenter,mouseleave,mousemove,mouseout,mouseover,mouseup,scroll")
+    var ons = oneObject("animationend,blur,change,input,click,dblclick,focus,keydown,keypress,keyup,mousedown,mouseenter,mouseleave,mousemove,mouseout,mouseover,mouseup,scroll,submit")
 
     function scanAttr(elem, vmodels) {
         var attributes = getAttributes ? getAttributes(elem) : elem.attributes
@@ -3633,7 +3676,7 @@
         sanitize: function(str) {
             return str.replace(rscripts, "").replace(ropen, function(a, b) {
                 if (raimg.test(a)) {
-                    a = a.replace(rjavascripturl, "")//移除javascript伪协议
+                    a = a.replace(rjavascripturl, " $1=''")//移除javascript伪协议
                 }
                 return a.replace(ron, " ").replace(/\s+/g, " ")//移除onXXX事件
             })
