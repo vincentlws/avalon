@@ -7,8 +7,13 @@
         <script>
             var model = avalon.define("test", function(vm) {
                 vm.array = [1, 2, 3, 4]
+                vm.a = {
+                    b: 1,
+                    c: 2
+                }
             })
             setTimeout(function() {
+                //alert(JSON.stringify(model.$model))
                 model.array = []
             }, 3000)
         </script>
@@ -22,7 +27,7 @@
         </ul>
         <p>下面是ms-each与ms-if的示例</p>
         <ul ms-each="array">
-            <li ms-if="!$last">{{el}}</li>
+            <li ms-if="$last">{{el}}</li>
         </ul>
 
     </body>
